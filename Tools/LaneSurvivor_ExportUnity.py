@@ -21,11 +21,16 @@
 #    - le point d'origine de l'objet = ses pieds (posé au sol)
 #    - "avant" du personnage = vers -Y dans Blender (vue de face)
 #    - les matériaux s'appellent comme dans Unity (MAT_...)
+#
+#  Textures : chaque image utilisée par un matériau est écrite en PNG
+#  dans un dossier Textures, à côté du FBX, sous le nom
+#  T_<Matériau sans MAT_>_<Rôle>.png  (BaseColor, Normal, Roughness...).
+#  Unity la branche tout seul sur le bon matériau (BaseColor et Normal).
 # ==================================================================
 bl_info = {
     "name": "Lane Survivor : export vers Unity",
     "author": "Workshop Unity 2026",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (4, 2, 0),
     "location": "Vue 3D > N > Lane Survivor",
     "description": "Exporte le .blend en FBX dans le projet Unity, à chaque sauvegarde",
@@ -53,8 +58,58 @@ def chemin_unity(chemin_blend):
     return None
 
 
+def role_texture(noeud):
+    """À quoi sert l'image : BaseColor, Normal, Roughness... (d'après ce qu'elle alimente)"""
+    for sortie in noeud.outputs:
+        for lien in sortie.links:
+            cible, prise = lien.to_node, lien.to_socket.name
+            if cible.type == 'NORMAL_MAP' or prise == 'Normal':
+                return "Normal"
+            if prise in ('Base Color', 'Color') and cible.type in ('BSDF_PRINCIPLED', 'EMISSION', 'BSDF_DIFFUSE', 'MIX_SHADER'):
+                return "BaseColor"
+            if prise in ('Roughness', 'Metallic', 'Alpha'):
+                return prise
+            if prise == 'Emission Color':
+                return "Emission"
+    return None
+
+
+def exporter_textures(dossier_fbx):
+    """Écrit en PNG les images des matériaux, dans <dossier du FBX>/Textures."""
+    dossier = os.path.join(dossier_fbx, "Textures")
+    ecrites = []
+    materiaux = {s.material for o in bpy.data.objects if o.type == 'MESH'
+                 for s in o.material_slots if s.material}
+    for mat in materiaux:
+        if not mat.node_tree:
+            continue
+        base = mat.name[4:] if mat.name.startswith("MAT_") else mat.name
+        for noeud in mat.node_tree.nodes:
+            if noeud.type != 'TEX_IMAGE' or not noeud.image or noeud.image.source not in ('FILE', 'TILED'):
+                continue
+            image = noeud.image
+            role = role_texture(noeud) or bpy.path.clean_name(os.path.splitext(image.name)[0])
+            nom = "T_%s_%s.png" % (base, role)
+            try:
+                _ = image.pixels[0]          # charge l'image si besoin
+                if not image.has_data:
+                    raise RuntimeError("image introuvable : " + image.filepath)
+                os.makedirs(dossier, exist_ok=True)
+                format_avant = image.file_format
+                image.file_format = 'PNG'
+                image.save(filepath=os.path.join(dossier, nom))
+                image.file_format = format_avant
+                ecrites.append(nom)
+            except Exception as erreur:
+                print("[Lane Survivor] Texture non exportée :", image.name, "-", erreur)
+    return ecrites
+
+
 def exporter_fbx(chemin_fbx):
     os.makedirs(os.path.dirname(chemin_fbx), exist_ok=True)
+    textures = exporter_textures(os.path.dirname(chemin_fbx))
+    if textures:
+        print("[Lane Survivor] Textures :", ", ".join(textures))
     bpy.ops.export_scene.fbx(
         filepath=chemin_fbx,
         use_selection=False,
